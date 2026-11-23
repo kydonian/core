@@ -106,16 +106,27 @@ async def test_satellite_with_wake_word(hass: HomeAssistant) -> None:
 
 
 class SlowMockAsyncTcpClient(MockAsyncTcpClient):
-    """Mock client that delays its response to simulate a busy satellite."""
+    """Mock client that delays connecting or responding, to simulate a busy satellite."""
 
-    def __init__(self, responses: list[Event | None], delay: float) -> None:
+    def __init__(
+        self,
+        responses: list[Event | None],
+        connect_delay: float = 0,
+        read_delay: float = 0,
+    ) -> None:
         """Initialize."""
         super().__init__(responses)
-        self._delay = delay
+        self._connect_delay = connect_delay
+        self._read_delay = read_delay
+
+    async def __aenter__(self):
+        """Connect after a delay."""
+        await asyncio.sleep(self._connect_delay)
+        return await super().__aenter__()
 
     async def read_event(self) -> Event | None:
         """Receive after a delay."""
-        await asyncio.sleep(self._delay)
+        await asyncio.sleep(self._read_delay)
         return await super().read_event()
 
 
@@ -130,17 +141,27 @@ def test_info_timeout_is_relaxed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("timeout", "expect_loaded"),
-    [(0.05, False), (0.5, True)],
-    ids=["too_short", "long_enough"],
+    ("connect_delay", "read_delay", "timeout", "expect_loaded"),
+    [
+        pytest.param(0, 0.2, 0.05, False, id="slow_read_too_short"),
+        pytest.param(0, 0.2, 0.5, True, id="slow_read_long_enough"),
+        pytest.param(0.2, 0, 0.05, False, id="slow_connect_too_short"),
+        pytest.param(0.2, 0, 0.5, True, id="slow_connect_long_enough"),
+    ],
 )
 async def test_load_info_timeout_governs_slow_satellite(
-    hass: HomeAssistant, timeout: float, expect_loaded: bool
+    hass: HomeAssistant,
+    connect_delay: float,
+    read_delay: float,
+    timeout: float,
+    expect_loaded: bool,
 ) -> None:
     """Test a slow satellite loads only when the timeout is generous enough."""
     with patch(
         "homeassistant.components.wyoming.data.AsyncTcpClient",
-        SlowMockAsyncTcpClient([STT_INFO.event()], delay=0.2),
+        SlowMockAsyncTcpClient(
+            [STT_INFO.event()], connect_delay=connect_delay, read_delay=read_delay
+        ),
     ):
         info = await load_wyoming_info(
             "localhost", 1234, retries=0, retry_wait=0, timeout=timeout
